@@ -1,8 +1,6 @@
 """
 Telegram Bot → Obsidian Faithful Transcript Agent
 =================================================
-Users send a YouTube link. The bot queues it, processes it, 
-and sends back the formatted transcript directly in the chat.
 """
 
 import os
@@ -37,7 +35,8 @@ GEMINI_MODEL = "gemini-2.5-flash"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
 # Fixed Regex Patterns
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_RE = re.compile(r"
+</think>
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
 # The Arabic Prompt
@@ -80,54 +79,40 @@ def _extract_audio_ffmpeg(src: str, out_path: str) -> None:
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {result.stderr.decode('utf-8', errors='replace')[-200:]}")
 
-import requests
-
 def _download_youtube_sync(url: str, out_dir: str) -> str:
-    """Download audio using Cobalt API (no cookies needed)."""
+    """Download audio using yt-dlp with cookies."""
+    outtmpl = os.path.join(out_dir, "%(title).80s.%(ext)s")
     
-    # Cobalt API endpoint
-    cobalt_url = "https://api.cobalt.tools/api/json"
+    # Check if cookies file exists
+    cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
     
-    payload = {
-        "url": url,
-        "isAudioOnly": True,
-        "aFormat": "mp3"
+    ydl_opts = {
+        "outtmpl": outtmpl,
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "quiet": False,
+        "no_warnings": False,
+        "noplaylist": True,
+        "retries": 10,
+        "fragment_retries": 10,
     }
     
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
+    # Use cookies if available
+    if os.path.exists(cookies_path):
+        ydl_opts["cookiefile"] = cookies_path
+        print("✓ Using YouTube cookies for authentication")
+    else:
+        print("⚠ WARNING: cookies.txt not found at", cookies_path)
     
-    try:
-        # Request download from Cobalt
-        print(f"Requesting download from Cobalt for: {url}")
-        response = requests.post(cobalt_url, json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get("status") not in ["stream", "redirect"]:
-            raise RuntimeError(f"Cobalt API error: {data.get('text', 'Unknown error')}")
-        
-        download_url = data["url"]
-        
-        # Download the file
-        out_path = os.path.join(out_dir, "audio.mp3")
-        print(f"Downloading audio from Cobalt...")
-        
-        with requests.get(download_url, stream=True, timeout=120) as r:
-            r.raise_for_status()
-            with open(out_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        
-        print(f"Downloaded to: {out_path}")
-        return out_path
-        
-    except Exception as e:
-        print(f"Cobalt API failed: {e}")
-        raise RuntimeError(f"Download failed: {e}")
-        
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+        if not os.path.exists(filename):
+            for ext in ("m4a", "mp3", "webm"):
+                candidate = Path(filename).with_suffix(f".{ext}")
+                if candidate.exists():
+                    return str(candidate)
+        return filename
+
 def _transcribe_sync(client: Groq, audio_path: str) -> str:
     with open(audio_path, "rb") as f:
         resp = client.audio.transcriptions.create(
@@ -238,7 +223,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application: Application):
     """Initialize queue and start background worker."""
     application.bot_data['queue'] = asyncio.Queue()
-    # Use asyncio.create_task instead of application.create_task
     asyncio.create_task(worker_loop(application))
     print("Queue initialized and background worker started.")
 
@@ -252,6 +236,13 @@ async def worker_loop(application: Application):
             print(f"Worker error: {e}")
         finally:
             application.bot_data['queue'].task_done()
+
+# ---------------------------------------------------------------------------
+# Error Handler
+# ---------------------------------------------------------------------------
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and continue."""
+    print(f"Exception while handling an update: {context.error}")
 
 # ---------------------------------------------------------------------------
 # Main
@@ -274,9 +265,15 @@ def main():
 
     # Register lifecycle hooks
     application.post_init = post_init
+    
+    # Add error handler
+    application.add_error_handler(error_handler)
 
     print("Starting bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True  # THIS FIXES THE CONFLICT ERROR!
+    )
 
 if __name__ == "__main__":
     main()
