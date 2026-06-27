@@ -80,28 +80,54 @@ def _extract_audio_ffmpeg(src: str, out_path: str) -> None:
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {result.stderr.decode('utf-8', errors='replace')[-200:]}")
 
-def _download_youtube_sync(url: str, out_dir: str) -> str:
-    outtmpl = os.path.join(out_dir, "%(title).80s.%(ext)s")
-    ydl_opts = {
-        "outtmpl": outtmpl,
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "quiet": True, "no_warnings": True, "noplaylist": True,
-        # Try multiple player clients to bypass bot detection
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["mweb", "tv", "tv_embedded"]
-            }
-        },
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        if not os.path.exists(filename):
-            for ext in ("m4a", "mp3", "webm"):
-                candidate = Path(filename).with_suffix(f".{ext}")
-                if candidate.exists(): return str(candidate)
-        return filename
+import requests
 
+def _download_youtube_sync(url: str, out_dir: str) -> str:
+    """Download audio using Cobalt API (no cookies needed)."""
+    
+    # Cobalt API endpoint
+    cobalt_url = "https://api.cobalt.tools/api/json"
+    
+    payload = {
+        "url": url,
+        "isAudioOnly": True,
+        "aFormat": "mp3"
+    }
+    
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        # Request download from Cobalt
+        print(f"Requesting download from Cobalt for: {url}")
+        response = requests.post(cobalt_url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("status") not in ["stream", "redirect"]:
+            raise RuntimeError(f"Cobalt API error: {data.get('text', 'Unknown error')}")
+        
+        download_url = data["url"]
+        
+        # Download the file
+        out_path = os.path.join(out_dir, "audio.mp3")
+        print(f"Downloading audio from Cobalt...")
+        
+        with requests.get(download_url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            with open(out_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        
+        print(f"Downloaded to: {out_path}")
+        return out_path
+        
+    except Exception as e:
+        print(f"Cobalt API failed: {e}")
+        raise RuntimeError(f"Download failed: {e}")
+        
 def _transcribe_sync(client: Groq, audio_path: str) -> str:
     with open(audio_path, "rb") as f:
         resp = client.audio.transcriptions.create(
