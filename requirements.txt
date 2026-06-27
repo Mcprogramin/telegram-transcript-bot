@@ -1,0 +1,4 @@
+customtkinter
+python-dotenv
+groq
+yt-dlp
