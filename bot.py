@@ -210,14 +210,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Lifecycle Hooks & Worker
 # ---------------------------------------------------------------------------
 async def post_init(application: Application):
-    """Runs BEFORE the bot starts. Initialize the queue here."""
+    """Initialize queue and start background worker."""
     application.bot_data['queue'] = asyncio.Queue()
-    print("Queue initialized.")
-
-async def post_start(application: Application):
-    """Runs AFTER the bot starts. Safe to create background tasks here."""
-    application.create_task(worker_loop(application))
-    print("Background worker started.")
+    # Use asyncio.create_task instead of application.create_task
+    asyncio.create_task(worker_loop(application))
+    print("Queue initialized and background worker started.")
 
 async def worker_loop(application: Application):
     """The infinite loop that processes the queue."""
@@ -251,7 +248,6 @@ def main():
 
     # Register lifecycle hooks
     application.post_init = post_init
-    application.post_start = post_start
 
     print("Starting bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
