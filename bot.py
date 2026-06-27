@@ -2,7 +2,7 @@
 Telegram Bot → Obsidian Faithful Transcript Agent
 =================================================
 Users send a YouTube link. The bot queues it, processes it, 
-and sends back the formatted .md file.
+and sends back the formatted transcript directly in the chat.
 """
 
 import os
@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # Telegram & Async imports
-from telegram import Update, constants
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # AI & Tools imports
@@ -86,6 +86,12 @@ def _download_youtube_sync(url: str, out_dir: str) -> str:
         "outtmpl": outtmpl,
         "format": "bestaudio[ext=m4a]/bestaudio/best",
         "quiet": True, "no_warnings": True, "noplaylist": True,
+        # Try multiple player clients to bypass bot detection
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["mweb", "tv", "tv_embedded"]
+            }
+        },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -113,6 +119,7 @@ def _format_sync(client: genai.Client, raw_text: str) -> str:
     return _strip_code_fences(response.text or "")
 
 async def send_long_text(bot, chat_id, text):
+    """Sends long text by splitting it into chunks of 4000 characters."""
     limit = 4000
     for i in range(0, len(text), limit):
         await bot.send_message(chat_id=chat_id, text=text[i:i+limit], parse_mode="Markdown")
@@ -157,12 +164,14 @@ async def process_video_task(chat_id: int, message_id: int, url: str, bot):
             safe_name = _sanitize_filename(url)
             final_text = f"**Transcript for:** {url}\n\n{formatted_text}"
             
+            # Save locally for records
             local_out = Path("Transcripts")
             local_out.mkdir(exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             local_path = local_out / f"{ts}_{safe_name}.md"
             local_path.write_text(final_text, encoding="utf-8")
 
+            # Send directly to Telegram chat
             await send_long_text(bot, chat_id, final_text)
             await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text="✅ Finished!")
 
@@ -191,21 +200,27 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     chat_id = update.message.chat_id
-    msg_id = update.message.message_id
     
     await update.message.reply_text(f"📥 Received link! Adding to queue...")
     
     # Use bot_data to store the queue safely
-    context.application.bot_data['queue'].put_nowait((chat_id, msg_id, url))
+    context.application.bot_data['queue'].put_nowait((chat_id, update.message.message_id, url))
 
+# ---------------------------------------------------------------------------
+# Lifecycle Hooks & Worker
+# ---------------------------------------------------------------------------
 async def post_init(application: Application):
-    # Initialize the queue in bot_data
+    """Runs BEFORE the bot starts. Initialize the queue here."""
     application.bot_data['queue'] = asyncio.Queue()
-    # Start the background worker
+    print("Queue initialized.")
+
+async def post_start(application: Application):
+    """Runs AFTER the bot starts. Safe to create background tasks here."""
     application.create_task(worker_loop(application))
-    print("Bot started. Background worker running.")
+    print("Background worker started.")
 
 async def worker_loop(application: Application):
+    """The infinite loop that processes the queue."""
     while True:
         chat_id, msg_id, url = await application.bot_data['queue'].get()
         try:
@@ -234,7 +249,9 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
 
+    # Register lifecycle hooks
     application.post_init = post_init
+    application.post_start = post_start
 
     print("Starting bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
