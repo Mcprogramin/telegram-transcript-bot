@@ -37,7 +37,7 @@ def _install_nodejs():
     subprocess.run(["apt-get", "install", "-y", "-qq", "nodejs"], check=True)
     print("Node.js installed.")
 
-_ensure_js_runtime()
+_install_nodejs()
 
 # ---------------------------------------------------------------------------
 # Configuration
