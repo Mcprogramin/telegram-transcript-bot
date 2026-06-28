@@ -1,6 +1,5 @@
 """
 Telegram Bot → Obsidian Faithful Transcript Agent
-=================================================
 """
 
 import os
@@ -25,7 +24,7 @@ from groq import Groq
 from google import genai
 import yt_dlp
 
-# Auto-install ffmpeg using static_ffmpeg
+# Auto-install ffmpeg
 import static_ffmpeg
 static_ffmpeg.add_paths()
 
@@ -38,9 +37,8 @@ GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
 GEMINI_MODEL = "gemini-2.5-flash"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
-# Fixed Regex Patterns
-_THINK_RE = re.compile(r"
-</think>
+# Fixed Regex Patterns (Exactly as you provided)
+_THINK_RE = re.compile(r"<think>\s*", re.IGNORECASE)
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
 # The Arabic Prompt
@@ -84,13 +82,11 @@ def _extract_audio_ffmpeg(src: str, out_path: str) -> None:
         raise RuntimeError(f"ffmpeg failed: {result.stderr.decode('utf-8', errors='replace')[-200:]}")
 
 def _download_youtube_sync(url: str, out_dir: str) -> str:
-    """Download audio using yt-dlp with multiple fallback methods."""
+    """Download audio using yt-dlp with cookies."""
     outtmpl = os.path.join(out_dir, "%(title).80s.%(ext)s")
     
-    # Check if cookies file exists
     cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
     
-    # Try multiple player clients to bypass bot detection
     ydl_opts = {
         "outtmpl": outtmpl,
         "format": "bestaudio[ext=m4a]/bestaudio/best",
@@ -106,12 +102,11 @@ def _download_youtube_sync(url: str, out_dir: str) -> str:
         },
     }
     
-    # Use cookies if available
     if os.path.exists(cookies_path):
         ydl_opts["cookiefile"] = cookies_path
         print("✓ Using YouTube cookies for authentication")
     else:
-        print("⚠ WARNING: cookies.txt not found, trying alternative methods")
+        print(" WARNING: cookies.txt not found, trying alternative methods")
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -144,7 +139,6 @@ def _format_sync(client: genai.Client, raw_text: str) -> str:
     return _strip_code_fences(response.text or "")
 
 async def send_long_text(bot, chat_id, text):
-    """Sends long text by splitting it into chunks of 4000 characters."""
     limit = 4000
     for i in range(0, len(text), limit):
         await bot.send_message(chat_id=chat_id, text=text[i:i+limit], parse_mode="Markdown")
@@ -189,14 +183,12 @@ async def process_video_task(chat_id: int, message_id: int, url: str, bot):
             safe_name = _sanitize_filename(url)
             final_text = f"**Transcript for:** {url}\n\n{formatted_text}"
             
-            # Save locally for records
             local_out = Path("Transcripts")
             local_out.mkdir(exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             local_path = local_out / f"{ts}_{safe_name}.md"
             local_path.write_text(final_text, encoding="utf-8")
 
-            # Send directly to Telegram chat
             await send_long_text(bot, chat_id, final_text)
             await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text="✅ Finished!")
 
@@ -226,22 +218,18 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     chat_id = update.message.chat_id
     
-    await update.message.reply_text(f"📥 Received link! Adding to queue...")
-    
-    # Use bot_data to store the queue safely
+    await update.message.reply_text(f" Received link! Adding to queue...")
     context.application.bot_data['queue'].put_nowait((chat_id, update.message.message_id, url))
 
 # ---------------------------------------------------------------------------
 # Lifecycle Hooks & Worker
 # ---------------------------------------------------------------------------
 async def post_init(application: Application):
-    """Initialize queue and start background worker."""
     application.bot_data['queue'] = asyncio.Queue()
     asyncio.create_task(worker_loop(application))
     print("Queue initialized and background worker started.")
 
 async def worker_loop(application: Application):
-    """The infinite loop that processes the queue."""
     while True:
         chat_id, msg_id, url = await application.bot_data['queue'].get()
         try:
@@ -251,11 +239,7 @@ async def worker_loop(application: Application):
         finally:
             application.bot_data['queue'].task_done()
 
-# ---------------------------------------------------------------------------
-# Error Handler
-# ---------------------------------------------------------------------------
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error and continue."""
     print(f"Exception while handling an update: {context.error}")
 
 # ---------------------------------------------------------------------------
@@ -277,16 +261,13 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
 
-    # Register lifecycle hooks
     application.post_init = post_init
-    
-    # Add error handler
     application.add_error_handler(error_handler)
 
     print("Starting bot...")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True  # THIS FIXES THE CONFLICT ERROR!
+        drop_pending_updates=True
     )
 
 if __name__ == "__main__":
