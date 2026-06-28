@@ -28,6 +28,17 @@ import yt_dlp
 import static_ffmpeg
 static_ffmpeg.add_paths()
 
+# Auto-install Node.js (Required for yt-dlp to decrypt YouTube signatures)
+def _install_nodejs():
+    if shutil.which("node"):
+        return
+    print("Installing Node.js for yt-dlp...")
+    subprocess.run(["apt-get", "update", "-qq"], check=True)
+    subprocess.run(["apt-get", "install", "-y", "-qq", "nodejs"], check=True)
+    print("Node.js installed.")
+
+_ensure_js_runtime()
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
