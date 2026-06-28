@@ -1,8 +1,8 @@
 """
-Telegram MTProto Audio Transcript Bot (Hybrid Stack)
-====================================================
-Groq Whisper: Best Arabic STT (10,000+ minutes/day)
-Gemini 1.5 Flash: Best Arabic formatting (1,500 requests/day)
+Telegram MTProto Audio Transcript Bot (Ultimate Groq Stack)
+===========================================================
+STT: Whisper-large-v3-turbo (Best Arabic accuracy)
+Text: GPT OSS 120B (Elite intelligence) with Llama 3.1 8B Instant fallback.
 """
 
 import os
@@ -18,8 +18,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
-from groq import Groq
-from google import genai
+from groq import Groq, RateLimitError
 
 # Auto-install ffmpeg for pydub
 import static_ffmpeg
@@ -35,12 +34,12 @@ API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING", "")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
-GEMINI_MODEL = "gemini-1.5-flash-latest"
+GROQ_TEXT_MODEL = "openai/gpt-oss-120b"
+FALLBACK_TEXT_MODEL = "llama-3.1-8b-instant"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
-# Fixed Regex Patterns
+# Fixed Regex Patterns (Exactly as you specified)
 _THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
@@ -120,29 +119,77 @@ def _transcribe_sync(groq_client: Groq, audio_path: str) -> str:
         )
     return resp.strip() if isinstance(resp, str) else getattr(resp, "text", "").strip()
 
-def _format_sync(gemini_client: genai.Client, raw_text: str) -> str:
-    response = gemini_client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[_FORMAT_SYSTEM, "---\n\nالنص:\n\n" + raw_text],
-        config={"temperature": 0.3}
-    )
-    return _strip_code_fences(response.text or "")
+def _chunk_text(text: str, max_words: int = 2000) -> list[str]:
+    """Splits text into chunks to respect TPM limits."""
+    words = text.split()
+    chunks = []
+    current_chunk = []
+    
+    for word in words:
+        current_chunk.append(word)
+        if len(current_chunk) >= max_words:
+            chunks.append(" ".join(current_chunk))
+            current_chunk = []
+            
+    if current_chunk:
+        chunks.append(" ".join(current_chunk))
+    return chunks
+
+async def _format_sync_async(groq_client: Groq, raw_text: str) -> str:
+    """Formats text using GPT OSS 120B with automatic fallback to Llama 3.1 8B."""
+    chunks = _chunk_text(raw_text, max_words=2000)
+    formatted_parts = []
+    
+    for i, chunk in enumerate(chunks):
+        current_model = GROQ_TEXT_MODEL
+        max_retries = 2
+        
+        for attempt in range(max_retries):
+            try:
+                # Add a 2.5s delay to stay safely under the 30 RPM limit
+                if i > 0 or attempt > 0:
+                    await asyncio.sleep(2.5)
+                    
+                completion = groq_client.chat.completions.create(
+                    model=current_model,
+                    messages=[
+                        {"role": "system", "content": _FORMAT_SYSTEM},
+                        {"role": "user", "content": f"النص:\n\n{chunk}"}
+                    ],
+                    temperature=0.3,
+                    max_tokens=4000
+                )
+                
+                formatted_parts.append(completion.choices[0].message.content or "")
+                break  # Success, move to next chunk
+                
+            except RateLimitError:
+                print(f"️ Rate limit hit on {current_model}. Switching to fallback...")
+                current_model = FALLBACK_TEXT_MODEL  # Switch to fallback for this chunk
+                
+        # If it somehow fails both, append the raw chunk to prevent crashing
+        if len(formatted_parts) <= i:
+            formatted_parts.append(chunk) 
+
+    return _strip_code_fences(" ".join(formatted_parts))
 
 # ---------------------------------------------------------------------------
 # Core Processing Engine
 # ---------------------------------------------------------------------------
 async def process_audio_task(message, file_path: str, task_dir: str):
-    status_msg = await message.reply("⚙️ Processing audio size...")
+    status_msg = await message.reply("️ Processing audio size...")
     
     try:
+        # 1. Smart size-based processing (Compress -> Slice if needed)
         chunk_paths = await asyncio.to_thread(_process_audio_chunks, file_path, task_dir)
         
+        # 2. Transcribe each chunk with Groq Whisper
         groq_client = Groq(api_key=GROQ_API_KEY)
         raw_text_parts = []
         
         for i, path in enumerate(chunk_paths):
             if len(chunk_paths) > 1:
-                await status_msg.edit_text(f"️ Transcribing chunk {i+1}/{len(chunk_paths)} with Whisper...")
+                await status_msg.edit_text(f"🎙️ Transcribing chunk {i+1}/{len(chunk_paths)} with Whisper...")
             else:
                 await status_msg.edit_text("🎙️ Transcribing with Groq Whisper...")
                 
@@ -151,10 +198,11 @@ async def process_audio_task(message, file_path: str, task_dir: str):
             
         raw_text = " ".join(raw_text_parts)
         
-        await status_msg.edit_text("✨ Formatting with Gemini 1.5 Flash...")
-        gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
-        formatted_text = await asyncio.to_thread(_format_sync, gemini_client, raw_text)
+        # 3. Format with GPT OSS 120B (Falls back to Llama 3.1 8B if rate limited)
+        await status_msg.edit_text("✨ Formatting with GPT OSS 120B...")
+        formatted_text = await _format_sync_async(groq_client, raw_text)
         
+        # 4. Send back to Telegram
         await status_msg.edit_text("📤 Sending transcript...")
         limit = 4000
         for i in range(0, len(formatted_text), limit):
@@ -176,9 +224,10 @@ async def process_audio_task(message, file_path: str, task_dir: str):
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     await message.reply_text(
-        "👋 Welcome to the Hybrid Audio Transcript Bot!\n\n"
-        "I use Groq Whisper for transcription and Gemini 1.5 Flash for Arabic formatting.\n"
-        "I support massive files (up to 2GB) with high daily limits!"
+        " Welcome to the Ultimate Groq Audio Bot!\n\n"
+        "I use Groq Whisper for transcription and GPT OSS 120B for elite Arabic formatting.\n"
+        "If limits are hit, I automatically fallback to Llama 3.1 8B Instant.\n"
+        "I support massive files (up to 2GB)!"
     )
 
 @app.on_message(filters.audio | filters.voice | filters.document)
@@ -211,7 +260,7 @@ async def handle_audio(client, message):
         shutil.rmtree(task_dir)
 
 def main():
-    if not all([API_ID, API_HASH, SESSION_STRING, GROQ_API_KEY, GOOGLE_API_KEY]):
+    if not all([API_ID, API_HASH, SESSION_STRING, GROQ_API_KEY]):
         print("ERROR: Missing environment variables!")
         return
 
