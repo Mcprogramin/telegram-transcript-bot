@@ -25,6 +25,10 @@ from groq import Groq
 from google import genai
 import yt_dlp
 
+# Auto-install ffmpeg using static_ffmpeg
+import static_ffmpeg
+static_ffmpeg.add_paths()
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -35,8 +39,10 @@ GEMINI_MODEL = "gemini-2.5-flash"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
 # Fixed Regex Patterns
-_THINK_RE = re.compile(r"<think>\s*", re.IGNORECASE)
+_THINK_RE = re.compile(r"
+</think>
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
+
 # The Arabic Prompt
 _FORMAT_SYSTEM = """أنت مُعيد بناء لغوي عربي نخبوي ومُحرر نصوص محادثات. هدفك الوحيد هو تحويل النصوص الخام الناتجة عن تحويل الكلام إلى نص (STT) إلى نثر بشري دقيق، منطقي، وطبيعي التدفق.
 
@@ -78,12 +84,13 @@ def _extract_audio_ffmpeg(src: str, out_path: str) -> None:
         raise RuntimeError(f"ffmpeg failed: {result.stderr.decode('utf-8', errors='replace')[-200:]}")
 
 def _download_youtube_sync(url: str, out_dir: str) -> str:
-    """Download audio using yt-dlp with cookies."""
+    """Download audio using yt-dlp with multiple fallback methods."""
     outtmpl = os.path.join(out_dir, "%(title).80s.%(ext)s")
     
     # Check if cookies file exists
     cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
     
+    # Try multiple player clients to bypass bot detection
     ydl_opts = {
         "outtmpl": outtmpl,
         "format": "bestaudio[ext=m4a]/bestaudio/best",
@@ -92,6 +99,11 @@ def _download_youtube_sync(url: str, out_dir: str) -> str:
         "noplaylist": True,
         "retries": 10,
         "fragment_retries": 10,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["mweb", "tv", "tv_embedded", "web"]
+            }
+        },
     }
     
     # Use cookies if available
@@ -99,17 +111,21 @@ def _download_youtube_sync(url: str, out_dir: str) -> str:
         ydl_opts["cookiefile"] = cookies_path
         print("✓ Using YouTube cookies for authentication")
     else:
-        print("⚠ WARNING: cookies.txt not found at", cookies_path)
+        print("⚠ WARNING: cookies.txt not found, trying alternative methods")
     
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        if not os.path.exists(filename):
-            for ext in ("m4a", "mp3", "webm"):
-                candidate = Path(filename).with_suffix(f".{ext}")
-                if candidate.exists():
-                    return str(candidate)
-        return filename
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            if not os.path.exists(filename):
+                for ext in ("m4a", "mp3", "webm"):
+                    candidate = Path(filename).with_suffix(f".{ext}")
+                    if candidate.exists():
+                        return str(candidate)
+            return filename
+    except Exception as e:
+        print(f"Download failed: {e}")
+        raise
 
 def _transcribe_sync(client: Groq, audio_path: str) -> str:
     with open(audio_path, "rb") as f:

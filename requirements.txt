@@ -4,3 +4,4 @@ groq
 google-genai
 yt-dlp
 requests
+static-ffmpeg
