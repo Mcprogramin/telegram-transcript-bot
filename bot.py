@@ -204,7 +204,7 @@ async def process_audio_task(message, file_path: str, task_dir: str):
         
         # 4. Send back to Telegram
         await status_msg.edit_text("📤 Sending transcript...")
-        limit = 4000
+        limit = 16000
         for i in range(0, len(formatted_text), limit):
             await message.reply_text(formatted_text[i:i+limit], parse_mode=ParseMode.MARKDOWN)
             
