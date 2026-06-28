@@ -5,3 +5,4 @@ groq
 google-genai
 pydub
 static-ffmpeg
+audioop-lts
