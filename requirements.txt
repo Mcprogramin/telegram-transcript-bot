@@ -2,7 +2,7 @@
 tgcrypto
 python-dotenv
 groq
-google-genai
+mistralai
 pydub
 static-ffmpeg
 audioop-lts

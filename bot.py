@@ -1,8 +1,8 @@
 """
-Telegram MTProto Audio Transcript Bot (Ultimate Groq Stack)
-===========================================================
-STT: Whisper-large-v3-turbo (Best Arabic accuracy)
-Text: GPT OSS 120B (Elite intelligence) with Llama 3.1 8B Instant fallback.
+Telegram MTProto Audio Transcript Bot (Mistral Stack)
+======================================================
+STT: Groq Whisper-large-v3-turbo (Best Arabic accuracy)
+Text: Mistral Small 3.1 (Excellent Arabic, 128K context, no TPM limits)
 """
 
 import os
@@ -18,7 +18,8 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
-from groq import Groq, RateLimitError
+from groq import Groq
+from mistralai import Mistral
 
 # Auto-install ffmpeg for pydub
 import static_ffmpeg
@@ -34,12 +35,12 @@ API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING", "")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "").strip()
 GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
-GROQ_TEXT_MODEL = "openai/gpt-oss-120b"
-FALLBACK_TEXT_MODEL = "llama-3.1-8b-instant"
+MISTRAL_TEXT_MODEL = "mistral-small-2506"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
-# Fixed Regex Patterns (Exactly as you specified)
+# Fixed Regex Patterns
 _THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
@@ -119,8 +120,8 @@ def _transcribe_sync(groq_client: Groq, audio_path: str) -> str:
         )
     return resp.strip() if isinstance(resp, str) else getattr(resp, "text", "").strip()
 
-def _chunk_text(text: str, max_words: int = 2000) -> list[str]:
-    """Splits text into chunks to respect TPM limits."""
+def _chunk_text(text: str, max_words: int = 3000) -> list[str]:
+    """Splits text into chunks. Mistral has 128K context so we can use larger chunks."""
     words = text.split()
     chunks = []
     current_chunk = []
@@ -135,41 +136,33 @@ def _chunk_text(text: str, max_words: int = 2000) -> list[str]:
         chunks.append(" ".join(current_chunk))
     return chunks
 
-async def _format_sync_async(groq_client: Groq, raw_text: str) -> str:
-    """Formats text using GPT OSS 120B with automatic fallback to Llama 3.1 8B."""
-    chunks = _chunk_text(raw_text, max_words=2000)
+async def _format_sync_async(mistral_client: Mistral, raw_text: str) -> str:
+    """Formats text using Mistral Small 3.1 (no TPM limits, just 1 req/sec)."""
+    chunks = _chunk_text(raw_text, max_words=3000)
     formatted_parts = []
     
     for i, chunk in enumerate(chunks):
-        current_model = GROQ_TEXT_MODEL
-        max_retries = 2
-        
-        for attempt in range(max_retries):
-            try:
-                # Add a 2.5s delay to stay safely under the 30 RPM limit
-                if i > 0 or attempt > 0:
-                    await asyncio.sleep(2.5)
-                    
-                completion = groq_client.chat.completions.create(
-                    model=current_model,
-                    messages=[
-                        {"role": "system", "content": _FORMAT_SYSTEM},
-                        {"role": "user", "content": f"النص:\n\n{chunk}"}
-                    ],
-                    temperature=0.3,
-                    max_tokens=16000
-                )
+        try:
+            # Add 1.5s delay to respect Mistral's 1 request/second limit
+            if i > 0:
+                await asyncio.sleep(1.5)
                 
-                formatted_parts.append(completion.choices[0].message.content or "")
-                break  # Success, move to next chunk
-                
-            except RateLimitError:
-                print(f"️ Rate limit hit on {current_model}. Switching to fallback...")
-                current_model = FALLBACK_TEXT_MODEL  # Switch to fallback for this chunk
-                
-        # If it somehow fails both, append the raw chunk to prevent crashing
-        if len(formatted_parts) <= i:
-            formatted_parts.append(chunk) 
+            chat_response = mistral_client.chat.complete(
+                model=MISTRAL_TEXT_MODEL,
+                messages=[
+                    {"role": "system", "content": _FORMAT_SYSTEM},
+                    {"role": "user", "content": f"النص:\n\n{chunk}"}
+                ],
+                temperature=0.3,
+                max_tokens=16000
+            )
+            
+            formatted_parts.append(chat_response.choices[0].message.content or "")
+            
+        except Exception as e:
+            print(f"Error formatting chunk {i}: {e}")
+            # If Mistral fails, keep the raw text as fallback
+            formatted_parts.append(chunk)
 
     return _strip_code_fences(" ".join(formatted_parts))
 
@@ -177,7 +170,7 @@ async def _format_sync_async(groq_client: Groq, raw_text: str) -> str:
 # Core Processing Engine
 # ---------------------------------------------------------------------------
 async def process_audio_task(message, file_path: str, task_dir: str):
-    status_msg = await message.reply("️ Processing audio size...")
+    status_msg = await message.reply("⚙️ Processing audio size...")
     
     try:
         # 1. Smart size-based processing (Compress -> Slice if needed)
@@ -198,25 +191,23 @@ async def process_audio_task(message, file_path: str, task_dir: str):
             
         raw_text = " ".join(raw_text_parts)
         
-        # 3. Format with GPT OSS 120B (Falls back to Llama 3.1 8B if rate limited)
-        await status_msg.edit_text("✨ Formatting with GPT OSS 120B...")
-        formatted_text = await _format_sync_async(groq_client, raw_text)
+        # 3. Format with Mistral Small 3.1
+        await status_msg.edit_text("✨ Formatting with Mistral Small 3.1...")
+        mistral_client = Mistral(api_key=MISTRAL_API_KEY)
+        formatted_text = await _format_sync_async(mistral_client, raw_text)
         
-                # 4. Send back to Telegram (smart chunking)
+        # 4. Send back to Telegram (smart chunking by paragraphs)
         await status_msg.edit_text("📤 Sending transcript...")
         
-        # Split by paragraphs first, then by character limit
         paragraphs = formatted_text.split('\n\n')
         current_chunk = ""
         
         for para in paragraphs:
-            # If adding this paragraph would exceed the limit, send current chunk first
-            if len(current_chunk) + len(para) + 2 > 3900:  # 3900 for safety margin
+            if len(current_chunk) + len(para) + 2 > 3900:
                 if current_chunk:
                     await message.reply_text(current_chunk.strip(), parse_mode=ParseMode.MARKDOWN)
                     current_chunk = para + "\n\n"
                 else:
-                    # Single paragraph is too long, split it by sentences
                     sentences = para.split('.')
                     for sentence in sentences:
                         if len(current_chunk) + len(sentence) + 1 > 3900:
@@ -228,9 +219,9 @@ async def process_audio_task(message, file_path: str, task_dir: str):
             else:
                 current_chunk += para + "\n\n"
         
-        # Send any remaining text
         if current_chunk:
-            await message.reply_text(current_chunk.strip(), parse_mode=ParseMode.MARKDOWN)            
+            await message.reply_text(current_chunk.strip(), parse_mode=ParseMode.MARKDOWN)
+            
         await status_msg.edit_text("✅ Finished!")
 
     except Exception as e:
@@ -247,10 +238,9 @@ async def process_audio_task(message, file_path: str, task_dir: str):
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     await message.reply_text(
-        " Welcome to the Ultimate Groq Audio Bot!\n\n"
-        "I use Groq Whisper for transcription and GPT OSS 120B for elite Arabic formatting.\n"
-        "If limits are hit, I automatically fallback to Llama 3.1 8B Instant.\n"
-        "I support massive files (up to 2GB)!"
+        "👋 Welcome to the Mistral Audio Bot!\n\n"
+        "I use Groq Whisper for transcription and Mistral Small 3.1 for elite Arabic formatting.\n"
+        "I support massive files (up to 2GB) with excellent Arabic quality!"
     )
 
 @app.on_message(filters.audio | filters.voice | filters.document)
@@ -283,7 +273,7 @@ async def handle_audio(client, message):
         shutil.rmtree(task_dir)
 
 def main():
-    if not all([API_ID, API_HASH, SESSION_STRING, GROQ_API_KEY]):
+    if not all([API_ID, API_HASH, SESSION_STRING, GROQ_API_KEY, MISTRAL_API_KEY]):
         print("ERROR: Missing environment variables!")
         return
 
