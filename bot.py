@@ -1,30 +1,39 @@
 """
-Telegram Audio Transcript Bot
-=============================
-Users send an audio file or voice note. The bot queues it, 
-transcribes it with Groq, formats it with Gemini, and sends it back.
+Telegram MTProto Audio Transcript Bot (God Mode)
+================================================
+Bypasses all Telegram limits using Pyrogram.
+Automatically slices massive files for Groq Whisper.
 """
 
 import os
 import re
 import asyncio
 import shutil
-import datetime
 import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from pyrogram import Client, filters
+from pyrogram.enums import ParseMode
 
 from groq import Groq
 from google import genai
 
+# Auto-install ffmpeg for pydub
+import static_ffmpeg
+static_ffmpeg.add_paths()
+from pydub import AudioSegment
+from pydub.utils import make_chunks
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING", "")
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
@@ -52,6 +61,14 @@ _FORMAT_SYSTEM = """أنت مُعيد بناء لغوي عربي نخبوي وم
 
 أخرج النص المُعاد بناؤه فقط. لا مقدمات. لا ملاحظات."""
 
+# Initialize Pyrogram Client using String Session
+app = Client(
+    "my_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION_STRING
+)
+
 # ---------------------------------------------------------------------------
 # Helper Functions
 # ---------------------------------------------------------------------------
@@ -61,13 +78,34 @@ def _strip_code_fences(text: str) -> str:
     text = text.replace("```", "")
     return text.strip()
 
+def _process_audio_chunks(input_path: str, task_dir: str) -> list[str]:
+    """Slices audio into 10-minute chunks if it's too big for Groq."""
+    max_size_bytes = 20 * 1024 * 1024  # 20MB safe limit for Groq
+    
+    if os.path.getsize(input_path) <= max_size_bytes:
+        return [input_path]
+        
+    print(f"File is {os.path.getsize(input_path) / (1024*1024):.2f} MB. Slicing...")
+    audio = AudioSegment.from_file(input_path)
+    
+    # 10 minutes in milliseconds
+    chunk_length_ms = 10 * 60 * 1000
+    chunks = make_chunks(audio, chunk_length_ms)
+    
+    chunk_paths = []
+    for i, chunk in enumerate(chunks):
+        chunk_path = os.path.join(task_dir, f"chunk_{i}.mp3")
+        # Export as 64kbps mono MP3 (approx 4.8MB per 10 mins)
+        chunk.export(chunk_path, format="mp3", bitrate="64k", parameters=["-ac", "1"])
+        chunk_paths.append(chunk_path)
+        
+    print(f"Split into {len(chunk_paths)} chunks.")
+    return chunk_paths
+
 def _transcribe_sync(client: Groq, audio_path: str) -> str:
     with open(audio_path, "rb") as f:
         resp = client.audio.transcriptions.create(
-            model=GROQ_AUDIO_MODEL, 
-            file=f, 
-            response_format="text",
-            language=TRANSCRIPT_LANGUAGE
+            model=GROQ_AUDIO_MODEL, file=f, response_format="text", language=TRANSCRIPT_LANGUAGE
         )
     return resp.strip() if isinstance(resp, str) else getattr(resp, "text", "").strip()
 
@@ -79,142 +117,111 @@ def _format_sync(client: genai.Client, raw_text: str) -> str:
     )
     return _strip_code_fences(response.text or "")
 
-async def send_long_text(bot, chat_id, text):
-    limit = 4000
-    for i in range(0, len(text), limit):
-        await bot.send_message(chat_id=chat_id, text=text[i:i+limit], parse_mode="Markdown")
-
 # ---------------------------------------------------------------------------
 # Core Processing Engine
 # ---------------------------------------------------------------------------
-async def process_audio_task(chat_id: int, message_id: int, file_path: str, task_dir: str, bot):
-    status_msg_id = None
+async def process_audio_task(message, file_path: str, task_dir: str):
+    status_msg = await message.reply("⚙️ Processing audio size...")
     
-    async def send_status(text):
-        nonlocal status_msg_id
-        try:
-            if status_msg_id:
-                await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text=text)
-            else:
-                msg = await bot.send_message(chat_id=chat_id, text=text)
-                status_msg_id = msg.message_id
-        except Exception:
-            pass
-
     try:
-        # 1. Transcribe (Groq)
-        await send_status("🎙️ Transcribing with Groq Whisper...")
+        # 1. Slice if needed
+        chunk_paths = await asyncio.to_thread(_process_audio_chunks, file_path, task_dir)
+        
+        # 2. Transcribe each chunk
         groq_client = Groq(api_key=GROQ_API_KEY)
-        raw_text = await asyncio.to_thread(_transcribe_sync, groq_client, file_path)
-
-        # 2. Format (Gemini)
-        await send_status("✨ Formatting & fixing Arabic with Gemini...")
+        raw_text_parts = []
+        
+        for i, path in enumerate(chunk_paths):
+            if len(chunk_paths) > 1:
+                await status_msg.edit_text(f"🎙️ Transcribing chunk {i+1}/{len(chunk_paths)}...")
+            else:
+                await status_msg.edit_text("🎙️ Transcribing with Groq Whisper...")
+                
+            part_text = await asyncio.to_thread(_transcribe_sync, groq_client, path)
+            raw_text_parts.append(part_text)
+            
+        # Regroup the text
+        raw_text = " ".join(raw_text_parts)
+        
+        # 3. Format with Gemini
+        await status_msg.edit_text("✨ Formatting & fixing Arabic with Gemini...")
         gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
         formatted_text = await asyncio.to_thread(_format_sync, gemini_client, raw_text)
-
-        # 3. Send to user
-        await send_status("📤 Sending transcript...")
-        final_text = f"**Transcript:**\n\n{formatted_text}"
         
-        # Save locally for records
-        local_out = Path("Transcripts")
-        local_out.mkdir(exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        local_path = local_out / f"{ts}_{chat_id}.md"
-        local_path.write_text(final_text, encoding="utf-8")
-
-        await send_long_text(bot, chat_id, final_text)
-        await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text="✅ Finished!")
+        # 4. Send back in chunks
+        await status_msg.edit_text("📤 Sending transcript...")
+        
+        limit = 4000
+        for i in range(0, len(formatted_text), limit):
+            await message.reply_text(formatted_text[i:i+limit], parse_mode=ParseMode.MARKDOWN)
+            
+        await status_msg.edit_text("✅ Finished!")
 
     except Exception as e:
-        error_msg = f"❌ Error: {str(e)[:200]}"
-        if status_msg_id:
-            await bot.edit_message_text(chat_id=chat_id, message_id=status_msg_id, text=error_msg)
-        else:
-            await bot.send_message(chat_id=chat_id, text=error_msg)
-            
+        await status_msg.edit_text(f"❌ Error: {str(e)[:200]}")
+        
     finally:
-        # Clean up the temporary audio file after processing
         try:
             shutil.rmtree(task_dir)
         except Exception:
             pass
 
 # ---------------------------------------------------------------------------
-# Telegram Bot Handlers
+# Pyrogram Handlers
 # ---------------------------------------------------------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Welcome to the Audio Transcript Bot!\n\n"
-        "Send me an audio file or a voice note, and I will transcribe, format, and fix the Arabic text for you."
+@app.on_message(filters.command("start"))
+async def start_cmd(client, message):
+    await message.reply_text(
+        "👋 Welcome to the God-Mode Audio Transcript Bot!\n\n"
+        "I have NO file size limits. Send me any audio file or voice note (up to 2GB).\n"
+        "If it's massive, I will automatically slice it, transcribe it, and stitch it back together.\n\n"
+        "I will transcribe, format, and fix the Arabic text for you."
     )
 
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Determine if it's a voice note or an audio file
-    if update.message.voice:
-        file = await update.message.voice.get_file()
-        file_ext = "ogg"
-    elif update.message.audio:
-        file = await update.message.audio.get_file()
-        file_ext = update.message.audio.file_name.split('.')[-1] if update.message.audio.file_name else "mp3"
-    else:
-        await update.message.reply_text("Please send a valid audio file or voice note.")
+@app.on_message(filters.audio | filters.voice | filters.document)
+async def handle_audio(client, message):
+    # Ignore non-audio documents
+    if message.document and not message.document.mime_type.startswith("audio/"):
         return
 
-    chat_id = update.message.chat_id
-    
-    # Create a unique ID for this file to avoid collisions
     task_id = str(uuid.uuid4())
     task_dir = os.path.join("temp_audio", task_id)
     os.makedirs(task_dir, exist_ok=True)
     
+    # Determine file extension
+    if message.voice:
+        file_ext = "ogg"
+    elif message.audio:
+        file_ext = message.audio.file_name.split('.')[-1] if message.audio.file_name else "mp3"
+    else:
+        file_ext = message.document.file_name.split('.')[-1] if message.document.file_name else "mp3"
+        
     file_path = os.path.join(task_dir, f"input.{file_ext}")
     
-    ack_msg = await update.message.reply_text("⬇️ Downloading audio from Telegram...")
-    await file.download_to_drive(file_path)
+    status_msg = await message.reply("⬇️ Downloading from Telegram (No Limits)...")
     
-    await ack_msg.edit_text(f"📥 Received audio! Adding to queue...")
-    
-    # Add to the background queue
-    context.application.bot_data['queue'].put_nowait((chat_id, update.message.message_id, file_path, task_dir))
+    try:
+        # Pyrogram download
+        await message.download(file_name=file_path)
+        await status_msg.edit_text("📥 Downloaded! Processing...")
+        
+        # Process
+        await process_audio_task(message, file_path, task_dir)
+        
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Download failed: {str(e)[:100]}")
+        shutil.rmtree(task_dir)
 
-async def post_init(application: Application):
-    application.bot_data['queue'] = asyncio.Queue()
-    asyncio.create_task(worker_loop(application))
-    print("Queue initialized and background worker started.")
-
-async def worker_loop(application: Application):
-    while True:
-        chat_id, msg_id, file_path, task_dir = await application.bot_data['queue'].get()
-        try:
-            await process_audio_task(chat_id, msg_id, file_path, task_dir, application.bot)
-        except Exception as e:
-            print(f"Worker error: {e}")
-        finally:
-            application.bot_data['queue'].task_done()
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print(f"Exception while handling an update: {context.error}")
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
-    if not GROQ_API_KEY or not GOOGLE_API_KEY:
-        print("ERROR: Missing API keys in .env file!")
+    if not all([API_ID, API_HASH, SESSION_STRING, GROQ_API_KEY, GOOGLE_API_KEY]):
+        print("ERROR: Missing environment variables!")
         return
 
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
-    if token == "YOUR_TELEGRAM_BOT_TOKEN_HERE": return
-
-    application = Application.builder().token(token).build()
-    
-    # We only need the start command and the audio handler now!
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio))
-    
-    application.post_init = post_init
-    application.add_error_handler(error_handler)
-
-    print("Starting bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    print("Starting Pyrogram Client...")
+    app.run()
 
 if __name__ == "__main__":
     main()
