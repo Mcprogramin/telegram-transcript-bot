@@ -32,8 +32,7 @@ GEMINI_MODEL = "gemini-2.5-flash"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
 # Fixed Regex Patterns
-_THINK_RE = re.compile(r"
-</think>
+_THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
 # The Arabic Prompt
