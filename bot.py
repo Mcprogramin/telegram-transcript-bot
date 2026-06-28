@@ -157,7 +157,7 @@ async def _format_sync_async(groq_client: Groq, raw_text: str) -> str:
                         {"role": "user", "content": f"النص:\n\n{chunk}"}
                     ],
                     temperature=0.3,
-                    max_tokens=4000
+                    max_tokens=16000
                 )
                 
                 formatted_parts.append(completion.choices[0].message.content or "")
@@ -202,12 +202,35 @@ async def process_audio_task(message, file_path: str, task_dir: str):
         await status_msg.edit_text("✨ Formatting with GPT OSS 120B...")
         formatted_text = await _format_sync_async(groq_client, raw_text)
         
-        # 4. Send back to Telegram
+                # 4. Send back to Telegram (smart chunking)
         await status_msg.edit_text("📤 Sending transcript...")
-        limit = 16000
-        for i in range(0, len(formatted_text), limit):
-            await message.reply_text(formatted_text[i:i+limit], parse_mode=ParseMode.MARKDOWN)
-            
+        
+        # Split by paragraphs first, then by character limit
+        paragraphs = formatted_text.split('\n\n')
+        current_chunk = ""
+        
+        for para in paragraphs:
+            # If adding this paragraph would exceed the limit, send current chunk first
+            if len(current_chunk) + len(para) + 2 > 3900:  # 3900 for safety margin
+                if current_chunk:
+                    await message.reply_text(current_chunk.strip(), parse_mode=ParseMode.MARKDOWN)
+                    current_chunk = para + "\n\n"
+                else:
+                    # Single paragraph is too long, split it by sentences
+                    sentences = para.split('.')
+                    for sentence in sentences:
+                        if len(current_chunk) + len(sentence) + 1 > 3900:
+                            if current_chunk:
+                                await message.reply_text(current_chunk.strip(), parse_mode=ParseMode.MARKDOWN)
+                            current_chunk = sentence + ". "
+                        else:
+                            current_chunk += sentence + ". "
+            else:
+                current_chunk += para + "\n\n"
+        
+        # Send any remaining text
+        if current_chunk:
+            await message.reply_text(current_chunk.strip(), parse_mode=ParseMode.MARKDOWN)            
         await status_msg.edit_text("✅ Finished!")
 
     except Exception as e:
