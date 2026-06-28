@@ -19,7 +19,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from groq import Groq
-from mistralai import Mistral
+from mistralai.client import Mistral  # 👈 CORRECTED IMPORT
 
 # Auto-install ffmpeg for pydub
 import static_ffmpeg
@@ -37,7 +37,7 @@ SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "").strip()
 GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
-MISTRAL_TEXT_MODEL = "mistral-small-latest"
+MISTRAL_TEXT_MODEL = "mistral-small-2506"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
 # Fixed Regex Patterns
