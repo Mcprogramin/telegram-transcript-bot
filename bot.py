@@ -1,9 +1,8 @@
 """
-Telegram MTProto Audio Transcript Bot (Ultimate Groq Stack)
-===========================================================
-Uses Groq for EVERYTHING.
-STT: Whisper-large-v3-turbo (Best Arabic accuracy)
-Text: Llama 3.3 70B (Insane speed, 14,400 req/day)
+Telegram MTProto Audio Transcript Bot (Hybrid Stack)
+====================================================
+Groq Whisper: Best Arabic STT (10,000+ minutes/day)
+Gemini 1.5 Flash: Best Arabic formatting (1,500 requests/day)
 """
 
 import os
@@ -20,6 +19,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from groq import Groq
+from google import genai
 
 # Auto-install ffmpeg for pydub
 import static_ffmpeg
@@ -35,11 +35,12 @@ API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING", "")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
-GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
+GEMINI_MODEL = "gemini-1.5-flash-latest"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
-# Fixed Regex Patterns (Exactly as you specified)
+# Fixed Regex Patterns
 _THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
@@ -82,13 +83,11 @@ def _process_audio_chunks(input_path: str, task_dir: str) -> list[str]:
     max_size_bytes = 20 * 1024 * 1024  # 20MB safe limit (Groq max is 25MB)
     file_size = os.path.getsize(input_path)
     
-    # If it's already small enough, don't touch it!
     if file_size <= max_size_bytes:
         return [input_path]
         
     print(f"File is {file_size / (1024*1024):.2f} MB. Attempting compression...")
     
-    # 1. Compress to 64kbps Mono MP3 (Massive space saver for WAV files)
     compressed_path = os.path.join(task_dir, "compressed_input.mp3")
     audio = AudioSegment.from_file(input_path)
     audio.export(compressed_path, format="mp3", bitrate="64k", parameters=["-ac", "1"])
@@ -96,11 +95,9 @@ def _process_audio_chunks(input_path: str, task_dir: str) -> list[str]:
     compressed_size = os.path.getsize(compressed_path)
     print(f"Compressed to {compressed_size / (1024*1024):.2f} MB")
     
-    # 2. If compression got it under the limit, NO SLICING NEEDED!
     if compressed_size <= max_size_bytes:
         return [compressed_path]
         
-    # 3. If it's STILL too big, then we slice the compressed MP3 by file size
     print(f"Still too big. Slicing by size...")
     total_duration_ms = len(audio)
     num_chunks = math.ceil(compressed_size / max_size_bytes)
@@ -123,17 +120,13 @@ def _transcribe_sync(groq_client: Groq, audio_path: str) -> str:
         )
     return resp.strip() if isinstance(resp, str) else getattr(resp, "text", "").strip()
 
-def _format_sync(groq_client: Groq, raw_text: str) -> str:
-    completion = groq_client.chat.completions.create(
-        model=GROQ_TEXT_MODEL,
-        messages=[
-            {"role": "system", "content": _FORMAT_SYSTEM},
-            {"role": "user", "content": f"النص:\n\n{raw_text}"}
-        ],
-        temperature=0.3,
-        max_tokens=8000
+def _format_sync(gemini_client: genai.Client, raw_text: str) -> str:
+    response = gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=[_FORMAT_SYSTEM, "---\n\nالنص:\n\n" + raw_text],
+        config={"temperature": 0.3}
     )
-    return _strip_code_fences(completion.choices[0].message.content or "")
+    return _strip_code_fences(response.text or "")
 
 # ---------------------------------------------------------------------------
 # Core Processing Engine
@@ -142,16 +135,14 @@ async def process_audio_task(message, file_path: str, task_dir: str):
     status_msg = await message.reply("⚙️ Processing audio size...")
     
     try:
-        # 1. Smart size-based processing (Compress -> Slice if needed)
         chunk_paths = await asyncio.to_thread(_process_audio_chunks, file_path, task_dir)
         
-        # 2. Transcribe each chunk with Groq Whisper
         groq_client = Groq(api_key=GROQ_API_KEY)
         raw_text_parts = []
         
         for i, path in enumerate(chunk_paths):
             if len(chunk_paths) > 1:
-                await status_msg.edit_text(f"🎙️ Transcribing chunk {i+1}/{len(chunk_paths)} with Whisper...")
+                await status_msg.edit_text(f"️ Transcribing chunk {i+1}/{len(chunk_paths)} with Whisper...")
             else:
                 await status_msg.edit_text("🎙️ Transcribing with Groq Whisper...")
                 
@@ -160,12 +151,11 @@ async def process_audio_task(message, file_path: str, task_dir: str):
             
         raw_text = " ".join(raw_text_parts)
         
-        # 3. Format with Groq Llama 3.3 70B
-        await status_msg.edit_text("✨ Formatting with Groq Llama 3.3 70B...")
-        formatted_text = await asyncio.to_thread(_format_sync, groq_client, raw_text)
+        await status_msg.edit_text("✨ Formatting with Gemini 1.5 Flash...")
+        gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
+        formatted_text = await asyncio.to_thread(_format_sync, gemini_client, raw_text)
         
-        # 4. Send back to Telegram
-        await status_msg.edit_text(" Sending transcript...")
+        await status_msg.edit_text("📤 Sending transcript...")
         limit = 4000
         for i in range(0, len(formatted_text), limit):
             await message.reply_text(formatted_text[i:i+limit], parse_mode=ParseMode.MARKDOWN)
@@ -186,9 +176,9 @@ async def process_audio_task(message, file_path: str, task_dir: str):
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     await message.reply_text(
-        "👋 Welcome to the Ultimate Groq Audio Bot!\n\n"
-        "I use Groq Whisper for transcription and Llama 3.3 70B for formatting.\n"
-        "I support massive files (up to 2GB) and handle up to 14,000 requests per day!"
+        "👋 Welcome to the Hybrid Audio Transcript Bot!\n\n"
+        "I use Groq Whisper for transcription and Gemini 1.5 Flash for Arabic formatting.\n"
+        "I support massive files (up to 2GB) with high daily limits!"
     )
 
 @app.on_message(filters.audio | filters.voice | filters.document)
@@ -221,7 +211,7 @@ async def handle_audio(client, message):
         shutil.rmtree(task_dir)
 
 def main():
-    if not all([API_ID, API_HASH, SESSION_STRING, GROQ_API_KEY]):
+    if not all([API_ID, API_HASH, SESSION_STRING, GROQ_API_KEY, GOOGLE_API_KEY]):
         print("ERROR: Missing environment variables!")
         return
 
