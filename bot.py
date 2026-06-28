@@ -40,8 +40,7 @@ GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
 # Fixed Regex Patterns (Exactly as you specified)
-_THINK_RE = re.compile(r"
-</think>
+_THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
 # The Arabic Prompt
