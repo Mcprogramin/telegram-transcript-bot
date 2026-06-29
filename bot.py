@@ -148,7 +148,7 @@ def _chunk_text(text: str, max_words: int = 3000) -> list[str]:
 
 async def _format_sync_async(mistral_client: Mistral, raw_text: str) -> str:
     """Formats text using Mistral Small 3.1 (no TPM limits, just 1 req/sec)."""
-    chunks = _chunk_text(raw_text, max_words=6000)
+    chunks = _chunk_text(raw_text, max_words=30000)
     formatted_parts = []
     
     for i, chunk in enumerate(chunks):
@@ -164,7 +164,7 @@ async def _format_sync_async(mistral_client: Mistral, raw_text: str) -> str:
                     {"role": "user", "content": f"النص:\n\n{chunk}"}
                 ],
                 temperature=0.3,
-                max_tokens=16000
+                max_tokens=100000
             )
             
             formatted_parts.append(chat_response.choices[0].message.content or "")
