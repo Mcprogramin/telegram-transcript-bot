@@ -1,8 +1,9 @@
 """
-Telegram MTProto Audio Transcript Bot (Mistral Stack)
-======================================================
-STT: Groq Whisper-large-v3-turbo (Best Arabic accuracy)
-Text: Mistral Small 3.1 (Excellent Arabic, 128K context, no TPM limits)
+Telegram MTProto Audio Transcript Bot (Mistral Large Stack + Queue)
+====================================================================
+STT: Groq Whisper-large-v3-turbo
+Text: Mistral Large 2512 (262K context)
+Queue: Strict First-Come-First-Served (FCFS) to prevent crashes & rate limits.
 """
 
 import os
@@ -19,7 +20,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from groq import Groq
-from mistralai.client import Mistral  # 👈 CORRECTED IMPORT
+from mistralai.client import Mistral
 
 # Auto-install ffmpeg for pydub
 import static_ffmpeg
@@ -44,7 +45,7 @@ TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 _THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
-# The Arabic Prompt
+# The Arabic Prompt (EXACTLY as you wrote it)
 _FORMAT_SYSTEM = """أنت "مُعيد بناء" (Reconstructor)، لست محرراً ولا مدققاً. مدخلاتك خراطة صوتية أخرجها Whisper، وليست نصاً كتبه إنسان. مهمتك: استعادة ما أراد الشيخ قوله، لا حفظ ما أخطأ فيه Whisper.
 
 ━━━ مثال إلزامي (هذا يُعرّف عملك) ━━━
@@ -71,6 +72,7 @@ _FORMAT_SYSTEM = """أنت "مُعيد بناء" (Reconstructor)، لست محر
 ٤. النصوص الشرعية: الآيات في «»، الأحاديث في ""
 
 المخرج: النص المُعاد بناؤه فقط، بلا عناوين ولا ملاحظات."""
+
 # Initialize Pyrogram Client
 app = Client(
     "my_bot",
@@ -78,6 +80,30 @@ app = Client(
     api_hash=API_HASH,
     session_string=SESSION_STRING
 )
+
+# ---------------------------------------------------------------------------
+# Queue System
+# ---------------------------------------------------------------------------
+task_queue = asyncio.Queue()
+worker_started = False
+
+async def queue_worker():
+    """Background worker that processes tasks one by one (FCFS)."""
+    while True:
+        # Wait for the next task in the queue
+        message, task_dir = await task_queue.get()
+        try:
+            # Process the task (Download -> Transcribe -> Format -> Send)
+            await process_audio_task(message, task_dir)
+        except Exception as e:
+            print(f"Worker error processing task: {e}")
+            try:
+                await message.reply_text(f"❌ حدث خطأ غير متوقع في المعالجة: {str(e)[:100]}")
+            except:
+                pass
+        finally:
+            # Mark the task as done so the queue can move to the next one
+            task_queue.task_done()
 
 # ---------------------------------------------------------------------------
 # Helper Functions
@@ -88,23 +114,29 @@ def _strip_code_fences(text: str) -> str:
     text = text.replace("```", "")
     return text.strip()
 
+def _clean_whisper_artifacts(text: str) -> str:
+    """Physically removes common Whisper hallucinations before sending to LLM."""
+    text = re.sub(r"ترجمة.*?قنقر", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"اشتركوا في القناة[،,]?\s*(?:وعلى|والحديث|وتابعوا| وعلى)?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"تابعونا", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"النص المحسن:?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"^(وعلى|و|،|,)\s*", "", text)
+    return text
+
 def _process_audio_chunks(input_path: str, task_dir: str) -> list[str]:
-    """Compresses WAV/large files to MP3, then slices by size only if necessary."""
-    max_size_bytes = 20 * 1024 * 1024  # 20MB safe limit (Groq max is 25MB)
+    max_size_bytes = 20 * 1024 * 1024
     file_size = os.path.getsize(input_path)
     
     if file_size <= max_size_bytes:
         return [input_path]
         
     print(f"File is {file_size / (1024*1024):.2f} MB. Attempting compression...")
-    
     compressed_path = os.path.join(task_dir, "compressed_input.mp3")
     audio = AudioSegment.from_file(input_path)
     audio.export(compressed_path, format="mp3", bitrate="64k", parameters=["-ac", "1"])
     
     compressed_size = os.path.getsize(compressed_path)
-    print(f"Compressed to {compressed_size / (1024*1024):.2f} MB")
-    
     if compressed_size <= max_size_bytes:
         return [compressed_path]
         
@@ -120,7 +152,6 @@ def _process_audio_chunks(input_path: str, task_dir: str) -> list[str]:
         chunk.export(chunk_path, format="mp3", bitrate="64k", parameters=["-ac", "1"])
         chunk_paths.append(chunk_path)
         
-    print(f"Split into {len(chunk_paths)} chunks based on size.")
     return chunk_paths
 
 def _transcribe_sync(groq_client: Groq, audio_path: str) -> str:
@@ -130,32 +161,27 @@ def _transcribe_sync(groq_client: Groq, audio_path: str) -> str:
         )
     return resp.strip() if isinstance(resp, str) else getattr(resp, "text", "").strip()
 
-def _chunk_text(text: str, max_words: int = 3000) -> list[str]:
-    """Splits text into chunks. Mistral has 128K context so we can use larger chunks."""
+def _chunk_text(text: str, max_words: int = 50000) -> list[str]:
     words = text.split()
     chunks = []
     current_chunk = []
-    
     for word in words:
         current_chunk.append(word)
         if len(current_chunk) >= max_words:
             chunks.append(" ".join(current_chunk))
             current_chunk = []
-            
     if current_chunk:
         chunks.append(" ".join(current_chunk))
     return chunks
 
 async def _format_sync_async(mistral_client: Mistral, raw_text: str) -> str:
-    """Formats text using Mistral Small 3.1 (no TPM limits, just 1 req/sec)."""
-    chunks = _chunk_text(raw_text, max_words=30000)
+    chunks = _chunk_text(raw_text, max_words=50000)
     formatted_parts = []
     
     for i, chunk in enumerate(chunks):
         try:
-            # Add 15s delay to respect Mistral's 1 request/second limit
             if i > 0:
-                await asyncio.sleep(15)
+                await asyncio.sleep(14)
                 
             chat_response = mistral_client.chat.complete(
                 model=MISTRAL_TEXT_MODEL,
@@ -164,51 +190,59 @@ async def _format_sync_async(mistral_client: Mistral, raw_text: str) -> str:
                     {"role": "user", "content": f"النص:\n\n{chunk}"}
                 ],
                 temperature=0.3,
-                max_tokens=100000
+                max_tokens=262144
             )
-            
             formatted_parts.append(chat_response.choices[0].message.content or "")
-            
         except Exception as e:
             print(f"Error formatting chunk {i}: {e}")
-            # If Mistral fails, keep the raw text as fallback
             formatted_parts.append(chunk)
 
-    return _strip_code_fences(" ".join(formatted_parts))
+    return _strip_code_fences("\n\n".join(formatted_parts))
 
 # ---------------------------------------------------------------------------
-# Core Processing Engine
+# Core Processing Engine (Now handles download sequentially)
 # ---------------------------------------------------------------------------
-async def process_audio_task(message, file_path: str, task_dir: str):
-    status_msg = await message.reply("⚙️ Processing audio size...")
+async def process_audio_task(message, task_dir: str):
+    # Determine file extension
+    if message.voice:
+        file_ext = "ogg"
+    elif message.audio:
+        file_ext = message.audio.file_name.split('.')[-1] if message.audio.file_name else "mp3"
+    else:
+        file_ext = message.document.file_name.split('.')[-1] if message.document.file_name else "mp3"
+        
+    file_path = os.path.join(task_dir, f"input.{file_ext}")
     
+    # 1. Download (Sequential to save disk space)
+    status_msg = await message.reply("⬇️ جاري تحميل الملف من تيليجرام...")
     try:
-        # 1. Smart size-based processing (Compress -> Slice if needed)
+        await message.download(file_name=file_path)
+        await status_msg.edit_text("⚙️ جاري تحليل حجم الملف وضغطه...")
+        
+        # 2. Compress/Slice Audio
         chunk_paths = await asyncio.to_thread(_process_audio_chunks, file_path, task_dir)
         
-        # 2. Transcribe each chunk with Groq Whisper
+        # 3. Transcribe
         groq_client = Groq(api_key=GROQ_API_KEY)
         raw_text_parts = []
-        
         for i, path in enumerate(chunk_paths):
             if len(chunk_paths) > 1:
-                await status_msg.edit_text(f"🎙️ Transcribing chunk {i+1}/{len(chunk_paths)} with Whisper...")
+                await status_msg.edit_text(f"🎙️ جاري التفريغ الصوتي للجزء {i+1}/{len(chunk_paths)}...")
             else:
-                await status_msg.edit_text("🎙️ Transcribing with Groq Whisper...")
-                
+                await status_msg.edit_text("🎙️ جاري التفريغ الصوتي عبر Whisper...")
             part_text = await asyncio.to_thread(_transcribe_sync, groq_client, path)
             raw_text_parts.append(part_text)
             
         raw_text = " ".join(raw_text_parts)
+        raw_text = _clean_whisper_artifacts(raw_text)
         
-        # 3. Format with Mistral Small 3.1
-        await status_msg.edit_text("✨ Formatting with Mistral Small 3.1...")
+        # 4. Format
+        await status_msg.edit_text("✨ جاري إعادة البناء عبر Mistral Large 2512...")
         mistral_client = Mistral(api_key=MISTRAL_API_KEY)
         formatted_text = await _format_sync_async(mistral_client, raw_text)
         
-        # 4. Send back to Telegram (smart chunking by paragraphs)
-        await status_msg.edit_text("📤 Sending transcript...")
-        
+        # 5. Send back
+        await status_msg.edit_text("📤 جاري إرسال النص النهائي...")
         paragraphs = formatted_text.split('\n\n')
         current_chunk = ""
         
@@ -232,10 +266,10 @@ async def process_audio_task(message, file_path: str, task_dir: str):
         if current_chunk:
             await message.reply_text(current_chunk.strip(), parse_mode=ParseMode.MARKDOWN)
             
-        await status_msg.edit_text("✅ Finished!")
+        await status_msg.edit_text("✅ تمت العملية بنجاح!")
 
     except Exception as e:
-        await status_msg.edit_text(f"❌ Error: {str(e)[:200]}")
+        await status_msg.edit_text(f"❌ خطأ في المعالجة: {str(e)[:200]}")
     finally:
         try:
             shutil.rmtree(task_dir)
@@ -248,46 +282,49 @@ async def process_audio_task(message, file_path: str, task_dir: str):
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     await message.reply_text(
-        "👋 Welcome to the Mistral Audio Bot!\n\n"
-        "I use Groq Whisper for transcription and Mistral Small 3.1 for elite Arabic formatting.\n"
-        "I support massive files (up to 2GB) with excellent Arabic quality!"
+        "👋 أهلاً بك في بوت التفريغ والتحرير الذكي!\n\n"
+        "أرسل لي ملفاً صوتياً أو صوتاً (Voice) وسأقوم بتفريغه وتنقيحه بأعلى جودة.\n"
+        "📌 *ملاحظة:* يعمل البوت بنظام الطابور (First-Come-First-Served) لضمان أعلى جودة وعدم استنفاد الموارد."
     )
 
 @app.on_message(filters.audio | filters.voice | filters.document)
 async def handle_audio(client, message):
+    global worker_started
+    
+    # Start the background worker if it's not running yet
+    if not worker_started:
+        asyncio.create_task(queue_worker())
+        worker_started = True
+
     if message.document and not message.document.mime_type.startswith("audio/"):
         return
 
+    # Create task directory
     task_id = str(uuid.uuid4())
     task_dir = os.path.join("temp_audio", task_id)
     os.makedirs(task_dir, exist_ok=True)
     
-    if message.voice:
-        file_ext = "ogg"
-    elif message.audio:
-        file_ext = message.audio.file_name.split('.')[-1] if message.audio.file_name else "mp3"
+    # Add to Queue
+    await task_queue.put((message, task_dir))
+    
+    # Notify user of their position
+    position = task_queue.qsize()
+    if position == 1:
+        await message.reply_text("✅ **تم استلام طلبك!**\n🚀 أنت الأول في الطابور، جاري بدء العمل على ملفك الآن...")
     else:
-        file_ext = message.document.file_name.split('.')[-1] if message.document.file_name else "mp3"
-        
-    file_path = os.path.join(task_dir, f"input.{file_ext}")
-    
-    status_msg = await message.reply("⬇️ Downloading from Telegram (No Limits)...")
-    
-    try:
-        await message.download(file_name=file_path)
-        await status_msg.edit_text("📥 Downloaded! Processing...")
-        await process_audio_task(message, file_path, task_dir)
-        
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Download failed: {str(e)[:100]}")
-        shutil.rmtree(task_dir)
+        await message.reply_text(
+            f"✅ **تم استلام طلبك وإضافته للطابور!**\n\n"
+            f"📊 موقعك الحالي: **{position}**\n"
+            f"⏳ سأبدأ العمل على ملفك فور انتهاء الملفات السابقة.\n"
+            f"*(يرجى عدم إرسال ملفات أخرى حتى ينتهي هذا الملف لتجنب ازدحام الطابور)*"
+        )
 
 def main():
     if not all([API_ID, API_HASH, SESSION_STRING, GROQ_API_KEY, MISTRAL_API_KEY]):
         print("ERROR: Missing environment variables!")
         return
 
-    print("Starting Pyrogram Client...")
+    print("Starting Pyrogram Client with Queue System...")
     app.run()
 
 if __name__ == "__main__":
