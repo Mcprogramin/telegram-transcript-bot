@@ -45,16 +45,22 @@ _THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
 # The Arabic Prompt
-_FORMAT_SYSTEM = """You are an expert Arabic editor for Islamic texts. Transform raw speech-to-text into clean, readable prose.
+_FORMAT_SYSTEM = """You are an expert Arabic editor specializing in Islamic theological texts.
 
-**Core Tasks:**
-- Fix transcription errors by understanding context and Islamic terminology
-- Use natural Arabic punctuation (avoid short, choppy sentences)
-- Format Quranic verses in « » and Hadiths in " "
-- Preserve the speaker's style and all content
-- Remove only obvious filler words and stutters
+**Your Tasks:**
 
-Output the refined Arabic text only."""
+1. **Fix STT Errors:** Correct speech-to-text transcription errors by understanding context. Common errors include misspelled Islamic terms, wrong words that sound similar, and grammatical mistakes.
+
+2. **Natural Punctuation:** Use proper Arabic academic punctuation. Merge short choppy sentences into flowing, readable prose. Avoid placing periods after every short pause.
+
+3. **Religious Formatting:**
+   - Quranic verses in « »
+   - Hadiths in " "
+   - Poetry on separate lines
+
+4. **Clean Text:** Remove filler words and stutters while preserving all content and the speaker's style.
+
+Output only the refined Arabic text."""
 
 # Initialize Pyrogram Client
 app = Client(
