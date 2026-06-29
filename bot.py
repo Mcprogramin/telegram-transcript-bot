@@ -37,7 +37,7 @@ SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "").strip()
 GROQ_AUDIO_MODEL = "whisper-large-v3-turbo"
-MISTRAL_TEXT_MODEL = "mistral-small-2506"
+MISTRAL_TEXT_MODEL = "mistral-medium-2505"
 TRANSCRIPT_LANGUAGE = os.getenv("TRANSCRIPT_LANGUAGE", "ar").strip() or None
 
 # Fixed Regex Patterns
@@ -148,14 +148,14 @@ def _chunk_text(text: str, max_words: int = 3000) -> list[str]:
 
 async def _format_sync_async(mistral_client: Mistral, raw_text: str) -> str:
     """Formats text using Mistral Small 3.1 (no TPM limits, just 1 req/sec)."""
-    chunks = _chunk_text(raw_text, max_words=3000)
+    chunks = _chunk_text(raw_text, max_words=4000)
     formatted_parts = []
     
     for i, chunk in enumerate(chunks):
         try:
             # Add 1.5s delay to respect Mistral's 1 request/second limit
             if i > 0:
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(2.5)
                 
             chat_response = mistral_client.chat.complete(
                 model=MISTRAL_TEXT_MODEL,
