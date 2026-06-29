@@ -45,21 +45,16 @@ _THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
 # The Arabic Prompt
-_FORMAT_SYSTEM = """أنت مُعيد بناء لغوي عربي نخبوي ومُحرر نصوص محادثات. هدفك الوحيد هو تحويل النصوص الخام الناتجة عن تحويل الكلام إلى نص (STT) إلى نثر بشري دقيق، منطقي، وطبيعي التدفق.
+_FORMAT_SYSTEM = """You are an expert Arabic editor for Islamic texts. Transform raw speech-to-text into clean, readable prose.
 
-### بروتوكول المعالجة الرباعية (إلزامي)
-**[المرحلة الأولى: تحليل السياق الشامل]** اقرأ النص كاملاً أولاً لفهم اللهجة والمجال.
-**[المرحلة الثانية: التحقق من المنطق والسياق]** افحص كل جملة للتأكد من منطقيتها.
-**[المرحلة الثالثة: التشريح الصوتي والنحوي]** أصلح هلوسات الذكاء الاصطناعي والأخطاء النحوية.
-**[المرحلة الرابعة: بناء الجملة والإيقاع]** أضف علامات الترقيم واحذف التكرار.
+**Core Tasks:**
+- Fix transcription errors by understanding context and Islamic terminology
+- Use natural Arabic punctuation (avoid short, choppy sentences)
+- Format Quranic verses in « » and Hadiths in " "
+- Preserve the speaker's style and all content
+- Remove only obvious filler words and stutters
 
-### قوانين التصحيح الحاسمة
-1. قانون المنطق السياقي: كل جملة يجب أن تكون منطقية.
-2. قانون الحفاظ على اللهجة: لا تحول العامية إلى فصحى.
-3. قانون الدقة المصطلحية: القرآن في «...»، الحديث في "...".
-4. لا تلخص، لا تحذف، لا تضف عناوين.
-
-أخرج النص المُعاد بناؤه فقط. لا مقدمات. لا ملاحظات."""
+Output the refined Arabic text only."""
 
 # Initialize Pyrogram Client
 app = Client(
