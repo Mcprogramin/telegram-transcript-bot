@@ -45,22 +45,16 @@ _THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
 # The Arabic Prompt
-_FORMAT_SYSTEM = """You are an expert Arabic editor specializing in Islamic theological texts.
+_FORMAT_SYSTEM = """You are an expert Arabic editor for Islamic theological texts. Your input is raw Whisper speech-to-text output, which is full of phonetic mishearings and AI hallucinations.
 
-**Your Tasks:**
+**Core Tasks:**
+1. **Aggressive Phonetic Correction:** Whisper mishears Arabic words. You MUST fix phonetic typos based on context (e.g., fix "نقاف" to "خلاف", "الضده" to "بضده", "الأسقياء" to "الأشقياء"). Do not be afraid to change words if they make no sense in the Islamic context.
+2. **Remove Hallucinations:** Delete common Whisper hallucinations at the start/end (e.g., "ترجمة نانسي قنقر", "اشتركوا في القناة", "تابعونا").
+3. **Natural Punctuation:** Use flowing academic Arabic punctuation. Merge choppy sentences.
+4. **Religious Formatting:** Quran in « », Hadith in " ", and format poetry on separate lines.
+5. **Preserve Content:** Keep all ideas and the speaker's style. Remove only stutters.
 
-1. **Fix STT Errors:** Correct speech-to-text transcription errors by understanding context. Common errors include misspelled Islamic terms, wrong words that sound similar, and grammatical mistakes.
-
-2. **Natural Punctuation:** Use proper Arabic academic punctuation. Merge short choppy sentences into flowing, readable prose. Avoid placing periods after every short pause.
-
-3. **Religious Formatting:**
-   - Quranic verses in « »
-   - Hadiths in " "
-   - Poetry on separate lines
-
-4. **Clean Text:** Remove filler words and stutters while preserving all content and the speaker's style.
-
-Output only the refined Arabic text."""
+Output ONLY the refined Arabic text."""
 
 # Initialize Pyrogram Client
 app = Client(
