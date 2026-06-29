@@ -45,17 +45,17 @@ _THINK_RE = re.compile(r"</think>")
 _FENCE_RE = re.compile(r"^```[^\n]*\n?", re.MULTILINE)
 
 # The Arabic Prompt
-_FORMAT_SYSTEM = """You are an expert Arabic editor for Islamic theological texts. Your input is raw Whisper speech-to-text output, which is full of phonetic mishearings and AI hallucinations.
+_FORMAT_SYSTEM = """You are an elite Arabic editor for Islamic theological texts. The input is raw Whisper speech-to-text, which contains phonetic errors, hallucinations, and robotic pauses.
 
-**Core Tasks:**
-1. **Aggressive Phonetic Correction:** Whisper mishears Arabic words. You MUST fix phonetic typos based on context (e.g., fix "نقاف" to "خلاف", "الضده" to "بضده", "الأسقياء" to "الأشقياء"). Do not be afraid to change words if they make no sense in the Islamic context.
-2. **Remove Hallucinations:** Delete common Whisper hallucinations at the start/end (e.g., "ترجمة نانسي قنقر", "اشتركوا في القناة", "تابعونا").
-3. **Natural Punctuation:** Use flowing academic Arabic punctuation. Merge choppy sentences.
-4. **Religious Formatting:** Quran in « », Hadith in " ", and format poetry on separate lines.
-5. **Preserve Content:** Keep all ideas and the speaker's style. Remove only stutters.
+**Your Directives:**
 
-Output ONLY the refined Arabic text."""
+1. **Deep Phonetic Correction:** Read for context. If a word is phonetically similar to an Islamic term or common Arabic word but makes no sense in context, correct it to the intended word. Do not rely on a fixed list; use your knowledge of Arabic and Islamic theology to fix ALL mishearings dynamically.
+2. **Eradicate Hallucinations:** Completely delete Whisper's start/end artifacts (e.g., channel subscriptions, translator names). Do not output titles like "النص المحسن".
+3. **Fluid Academic Punctuation (CRITICAL):** The speaker pauses frequently. DO NOT put a period after every pause. Merge short pauses into long, flowing, grammatically correct academic sentences using commas and semicolons. Only use periods at the end of complete, meaningful thoughts. (e.g., NEVER write "يقهر هذا. بهذا.", write "يقهر هذا بهذا").
+4. **Formatting:** Quranic verses in « », Hadiths in " ", and poetry on separate lines.
+5. **Preservation:** Keep all ideas, theological nuances, and the speaker's voice. Only remove meaningless stutters.
 
+Output strictly the refined text. No titles, no notes, no markdown code blocks."""
 # Initialize Pyrogram Client
 app = Client(
     "my_bot",
