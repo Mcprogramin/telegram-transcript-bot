@@ -1,53 +1,178 @@
 # 🎙️ Doros Transcript Bot
 
-**AI-Powered Telegram Audio Transcription & Elite Arabic Formatting**
+An enterprise-grade Telegram bot that transcribes Arabic Islamic lectures (دروس) and reconstructs them into clean, publication-ready Arabic text — built to turn raw, noisy audio into something you could publish straight to a website or PDF.
 
-An enterprise-grade Telegram bot that transcribes long Arabic audio lectures and formats them into publication-ready, academically structured text. Built with a powerful AI stack, it handles massive files, corrects phonetic errors, and beautifully formats Islamic theology, Quranic verses, and poetry.
-
-![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)
-![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)
-![Telegram](https://img.shields.io/badge/Telegram-MTProto-0088cc?logo=telegram)
-![Groq](https://img.shields.io/badge/STT-Groq_Whisper-F55036)
-![Mistral](https://img.shields.io/badge/LLM-Mistral_Large-FF7000)
+It combines fast, accurate speech-to-text with an LLM-powered "reconstruction" pass that goes beyond simple cleanup: it rebuilds sentence structure, fixes phonetic mishearings, restores Qur'anic verses and Hadith to their correct wording, and properly formats poetry (شعر) — all while staying faithful to the speaker's intended meaning rather than Whisper's literal (and often broken) output.
 
 ---
 
 ## ✨ Features
 
-- 🎧 **Massive File Support:** Bypasses Telegram's 20MB limit using Pyrogram MTProto to download and process audio files up to **2GB**.
-- 🧠 **Elite AI Stack:** 
-  - **STT:** Groq `whisper-large-v3-turbo` for lightning-fast, highly accurate Arabic transcription.
-  - **LLM:** Mistral Large 2512 (262K Context Window) for deep contextual understanding and editing.
-- 📖 **The "Reconstructor" Prompt:** A custom-engineered system prompt that forces the LLM to act as an elite Arabic editor. It fixes Whisper's phonetic mishearings, adds Quranic diacritics (Tashkeel), and formats poetry correctly.
-- ⏳ **Smart FCFS Queue:** A strict First-Come-First-Served `asyncio.Queue` system prevents server crashes, manages memory efficiently, and respects API rate limits when multiple users send files simultaneously.
-- 🛡️ **Anti-Hallucination Engine:** Python-level Regex cleaning automatically strips common Whisper artifacts (e.g., "ترجمة نانسي قنقر", "اشتركوا في القناة") before the text ever reaches the LLM.
-- ⚡ **Optimized Chunking:** Processes up to **50,000 words per chunk**, maximizing Mistral Large's 262K context window for blazing-fast processing speeds.
-- 🆓 **Free Hosting Compatible:** Includes a built-in FastAPI dummy server trick to keep the bot alive 24/7 on free-tier platforms like Hugging Face Spaces.
+- **🎧 Speech-to-Text** — Powered by Groq's `whisper-large-v3-turbo` for fast, high-accuracy Arabic transcription.
+- **✍️ Intelligent Reconstruction** — Mistral Large rewrites the raw transcript as a "Reconstructor" (مُعيد بناء), not just a proofreader:
+  - Rebuilds punctuation and sentence flow based on meaning, not Whisper's noisy pause-based periods.
+  - Corrects phonetic/mishearing errors (e.g. مفردات مشوهة → الكلمة الصحيحة حسب السياق).
+  - Restores Qur'anic ayat and Hadith to their known, correct text.
+  - Properly formats poetry into paired hemistichs (`شطر *** شطر`).
+  - Wraps Qur'an in `«»` and Hadith in `""`.
+- **📦 Automatic Chunking** — Large audio files are compressed and split automatically to stay under API size limits; long transcripts are chunked for the LLM's context window.
+- **🧵 FCFS Queue System** — A strict first-come-first-served async queue prevents concurrent processing crashes and rate-limit collisions, with live queue position updates sent to users.
+- **🔄 Live Status Updates** — Users get real-time progress messages (downloading → transcribing → reconstructing → sending).
+- **🧹 Whisper Artifact Cleanup** — Strips common transcription noise (subscribe prompts, channel mentions, leftover markdown fences, etc.) before formatting.
+- **📨 Smart Message Splitting** — Long transcripts are intelligently split across multiple Telegram messages, respecting paragraph and sentence boundaries.
+- **🌐 Always-On Trick** — A lightweight FastAPI server runs alongside the bot to prevent free-tier hosting platforms from idling it to sleep.
 
 ---
 
 ## 🏗️ Architecture
 
-1. **Download & Compress:** Pyrogram downloads the audio. `Pydub` and `FFmpeg` compress/slice it if it exceeds Groq's 25MB API limit.
-2. **Transcription:** Audio chunks are sent to Groq Whisper in sequence.
-3. **Pre-Cleaning:** Regex strips AI hallucinations and intro/outro junk.
-4. **Reconstruction:** The raw text is chunked (up to 50K words) and sent to Mistral Large with the custom Arabic formatting prompt.
-5. **Delivery:** The beautifully formatted text is split into Telegram-friendly 4096-character messages and sent back to the user.
+```
+Telegram Audio/Voice Message
+        │
+        ▼
+ ┌─────────────────┐
+ │   FCFS Queue     │  (async, single worker — no race conditions)
+ └─────────────────┘
+        │
+        ▼
+ ┌─────────────────┐
+ │  Compress/Chunk   │  (pydub + ffmpeg, keeps files under 20MB)
+ └─────────────────┘
+        │
+        ▼
+ ┌─────────────────┐
+ │  Groq Whisper STT │  (whisper-large-v3-turbo)
+ └─────────────────┘
+        │
+        ▼
+ ┌─────────────────┐
+ │  Artifact Cleanup  │  (regex-based noise removal)
+ └─────────────────┘
+        │
+        ▼
+ ┌─────────────────┐
+ │  Mistral Large 2512 │  (system-prompted Reconstructor)
+ └─────────────────┘
+        │
+        ▼
+   Formatted Arabic Text → sent back to user on Telegram
+```
 
 ---
 
-## 🚀 Quick Start (Local Development)
+## 🛠️ Tech Stack
 
-### Prerequisites
-- Python 3.11+
-- FFmpeg installed on your system
-- Telegram API credentials ([my.telegram.org](https://my.telegram.org))
-- Groq API Key ([console.groq.com](https://console.groq.com))
-- Mistral API Key ([console.mistral.ai](https://console.mistral.ai))
+| Component | Technology |
+|---|---|
+| Telegram Client | [Pyrogram](https://docs.pyrogram.org/) (MTProto) |
+| Speech-to-Text | [Groq API](https://groq.com/) — `whisper-large-v3-turbo` |
+| Text Reconstruction | [Mistral AI](https://mistral.ai/) — `mistral-large-2512` |
+| Audio Processing | `pydub` + `static-ffmpeg` |
+| Keep-Alive Server | `FastAPI` + `uvicorn` |
+| Concurrency | `asyncio` Queue (FCFS worker) |
 
-### Installation
+---
 
-1. **Clone the repository:**
+## 📋 Prerequisites
+
+- Python 3.10+
+- A Telegram API ID/Hash and session string (via Pyrogram)
+- A [Groq API key](https://console.groq.com/)
+- A [Mistral AI API key](https://console.mistral.ai/)
+- `ffmpeg` (auto-installed via `static-ffmpeg`)
+
+---
+
+## ⚙️ Installation
+
+1. **Clone the repository**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/doros-transcript-bot.git
-   cd doros-transcript-bot
+   git clone https://github.com/<your-username>/<your-repo>.git
+   cd <your-repo>
+   ```
+
+2. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Configure environment variables**
+
+   Create a `.env` file in the project root:
+   ```env
+   TELEGRAM_API_ID=your_api_id
+   TELEGRAM_API_HASH=your_api_hash
+   TELEGRAM_SESSION_STRING=your_session_string
+
+   GROQ_API_KEY=your_groq_api_key
+   MISTRAL_API_KEY=your_mistral_api_key
+
+   # Optional — defaults to "ar"
+   TRANSCRIPT_LANGUAGE=ar
+   ```
+
+4. **Run the bot**
+   ```bash
+   python bot.py
+   ```
+
+---
+
+## 🔑 Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `TELEGRAM_API_ID` | ✅ | Your Telegram app's API ID |
+| `TELEGRAM_API_HASH` | ✅ | Your Telegram app's API hash |
+| `TELEGRAM_SESSION_STRING` | ✅ | Pre-generated Pyrogram session string |
+| `GROQ_API_KEY` | ✅ | API key for Groq Whisper transcription |
+| `MISTRAL_API_KEY` | ✅ | API key for Mistral Large reconstruction |
+| `TRANSCRIPT_LANGUAGE` | ❌ | Whisper language hint (default: `ar`) |
+
+---
+
+## 🚀 Deployment
+
+The bot includes a built-in keep-alive trick for free-tier hosts (e.g. Railway, Hugging Face Spaces): a minimal FastAPI server runs on port `7860` and exposes a health check at `/`, reporting bot status and current queue size.
+
+**Railway / similar platforms:**
+1. Push this repo to GitHub.
+2. Create a new project from the repo.
+3. Add the environment variables listed above in your platform's dashboard.
+4. Deploy — the bot and the keep-alive server start together via `bot.py`.
+
+---
+
+## 💬 Usage
+
+1. Start a chat with your bot on Telegram and send `/start`.
+2. Send an audio file, voice note, or audio document.
+3. The bot replies with your queue position, then walks through:
+   - ⬇️ Downloading
+   - ⚙️ Compressing/analyzing
+   - 🎙️ Transcribing
+   - ✨ Reconstructing
+   - 📤 Sending the final formatted text
+4. Long lectures are automatically split into multiple messages.
+
+---
+
+## 📁 Project Structure
+
+```
+.
+├── bot.py              # Main bot logic, queue system, processing pipeline
+├── requirements.txt     # Python dependencies
+├── .gitignore
+└── readme.md
+```
+
+---
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome — especially around improving the Arabic reconstruction prompt, handling additional audio formats, or hardening the queue system further.
+
+## 📄 License
+
+Add your preferred license here (e.g. MIT).
