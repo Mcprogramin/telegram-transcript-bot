@@ -1,6 +1,9 @@
-# 🎙️ Doros Transcript Bot
+# 🎙️ Doros Transcript Bot — تفريغ الصوتيات الآلي
 
 An enterprise-grade Telegram bot that transcribes Arabic Islamic lectures (دروس) and reconstructs them into clean, publication-ready Arabic text — built to turn raw, noisy audio into something you could publish straight to a website or PDF.
+
+🔗 **Live bot:** [@dorus_transcriptbot](https://t.me/dorus_transcriptbot)
+🚀 **Hosted on:** Hugging Face Spaces (kept awake via the FastAPI dummy server trick described below)
 
 It combines fast, accurate speech-to-text with an LLM-powered "reconstruction" pass that goes beyond simple cleanup: it rebuilds sentence structure, fixes phonetic mishearings, restores Qur'anic verses and Hadith to their correct wording, and properly formats poetry (شعر) — all while staying faithful to the speaker's intended meaning rather than Whisper's literal (and often broken) output.
 
@@ -133,13 +136,15 @@ Telegram Audio/Voice Message
 
 ## 🚀 Deployment
 
-The bot includes a built-in keep-alive trick for free-tier hosts (e.g. Railway, Hugging Face Spaces): a minimal FastAPI server runs on port `7860` and exposes a health check at `/`, reporting bot status and current queue size.
+The bot is currently live on **Hugging Face Spaces**. Since Spaces are built for web apps, the bot includes a built-in keep-alive trick: a minimal FastAPI server runs on port `7860` (HF's expected port) and exposes a health check at `/`, reporting bot status and current queue size — this keeps the Space from idling out even though the actual workload is a Telegram client, not a web server.
 
-**Railway / similar platforms:**
-1. Push this repo to GitHub.
-2. Create a new project from the repo.
-3. Add the environment variables listed above in your platform's dashboard.
-4. Deploy — the bot and the keep-alive server start together via `bot.py`.
+**Hugging Face Spaces:**
+1. Create a new Space with the **Docker** (or Python) SDK.
+2. Push this repo's contents to the Space.
+3. Add the environment variables listed above as **Space secrets** (Settings → Repository secrets).
+4. The Space builds and runs `bot.py`, which starts both the Pyrogram client and the FastAPI keep-alive server.
+
+**Railway / other platforms** work the same way — push the repo, set the env vars, and deploy. `bot.py` handles both the bot and the keep-alive server together.
 
 ---
 
